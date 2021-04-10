@@ -12,12 +12,19 @@ function generate_data()
 end
 
 
-function lossf(m, x,y)
+function lossf(x,y,m)
   Flux.reset!(m)
   ŷ = m.(x)
-  sum(Flux.Losses.mse.(ŷ,y))
+  sum([(ŷ[i][end,1] - y[i][1,1]) ^ 2 for i in 1:length(y)]), ŷ
 end
-callback(c,x,y) = println(lossf(c, x, y))
+
+function callback(x,y,c)
+    l,pred = lossf(x, y, c)
+    println(l)
+    fig = plot([x[end,1] for x in pred])
+    scatter!([x[1,1] for x in y])
+    display(fig)
+end
 
 function loss_sciml(θ)
   m = re(θ)
@@ -26,19 +33,19 @@ function loss_sciml(θ)
   sum(Flux.Losses.mse.(ŷ,y)), ŷ
 end
 
-function loss_galactic(θ,re,x,y)
+function loss_galactic(θ,x0,re,x,y)
   m = re(θ)
   #x, y = data_x, data_y
   ŷ = m.(x)
-  sum(Flux.Losses.mse.(ŷ,y)), ŷ
+  sum([(ŷ[i][end,1] - y[i][1,1]) ^ 2 for i in 1:length(y)]), ŷ
 end
 
 
-function cbs(θ,l,pred;doplot=false) #callback function to observe training
+function cbs(θ,l,pred;doplot=true) #callback function to observe training
   display(l)
   if doplot
-    fig = plot([x[1] for x in pred])
-    scatter!([x[1] for x in data_y])
+    fig = plot([x[end,1] for x in pred])
+    #scatter!([x[1] for x in y])
     display(fig)
   end
   return false
@@ -46,19 +53,35 @@ end
 
 
 function train()
-    ncp = NCPNet(2, 2,3,4,1,2,2,3,4)
+    #ncp = NCPNet(2, 2,7,0,1, connections="full")
+    #ncp = NCPNet(2, 2,3,4,1,2,2,3,4)
+    ncp = NCPNet(2, 2,7,0,1,2,2,3,4)
+    lower, upper = get_bounds(ncp.cell)
+    chain = Chain(Mapper(2),ncp,Mapper(1))
     #c = Flux.Chain(Mapper(2),LTCNS(2,2),Mapper(2),LTC(2,7),Mapper(7),LTCNS(7,1),Mapper(1))
-    c = ncp
+    c = chain
     ps,re = Flux.destructure(c)
     θ = Flux.params(c)
 
-    lower, upper = get_bounds(ncp.cell)
+    @show length(ps)
+    @show sum(length.(Flux.trainable(ncp.cell)))
+
+    @show length(θ)
+    @show sum(length.(θ))
+
+    sens_mask = ncp.cell.sens_mask
+    syn_mask = ncp.cell.syn_mask
+
+    @show sum(sens_mask)
+    @show sum(syn_mask)
+
+
     data_x, data_y = generate_data()
 
-    @time loss_galactic(ps,re,data_x,data_y)
-    @time loss_galactic(ps,re,data_x,data_y)
-    @time loss_galactic(ps,re,data_x,data_y)
-    @time loss_galactic(ps,re,data_x,data_y)
+    @time loss_galactic(ps,ps,re,data_x,data_y)
+    @time loss_galactic(ps,ps,re,data_x,data_y)
+    @time loss_galactic(ps,ps,re,data_x,data_y)
+    @time loss_galactic(ps,ps,re,data_x,data_y)
 
 
     fig = plot([x[1] for x in data_x])
@@ -79,13 +102,19 @@ function train()
     # lcons::LC
     # ucons::UC
     # kwargs::K
+    # data = ncycle([(data_x, data_y)], 1000)
+    Flux.train!((x,y) -> lossf(x,y,c)[1], θ, ncycle([(data_x, data_y)], 10), Flux.ADAM(0.001f0),cb=()->callback(data_x,data_y,c))
+    Flux.train!((x,y) -> lossf(x,y,c)[1], θ, ncycle([(data_x, data_y)], 1000), Flux.ADAM(0.01f0),cb=()->callback(data_x,data_y,c))
+    Flux.train!((x,y) -> lossf(x,y,c)[1], θ, ncycle([(data_x, data_y)], 100), Flux.ADAM(0.001f0),cb=()->callback(data_x,data_y,c))
+    Flux.train!((x,y) -> lossf(x,y,c)[1], θ, ncycle([(data_x, data_y)], 1000), Flux.ADAM(0.001f0),cb=()->callback(data_x,data_y,c))
+    Flux.train!((x,y) -> lossf(x,y,c)[1], θ, ncycle([(data_x, data_y)], 1000), Flux.ADAM(0.0001f0),cb=()->callback(data_x,data_y,c))
 
-    data = ncycle([(data_x, data_y)], 10)
-    Flux.train!((x,y) -> lossf(c,data_x,data_y), θ, data, Flux.ADAM(0.001f0),cb=()->callback(c,data_x,data_y))
 
-    f = OptimizationFunction((p,x)->loss_galactic(ps,re,data_x,data_y),GalacticOptim.AutoZygote())
-    prob = OptimizationProblem(f,ps)
-    sol = solve(prob,ADAM(), maxiters=3, cb = cbs)
-    #@time sol = solve(prob,NelderMead(), maxiters=1000, cb = cbs)
+
+
+    f = OptimizationFunction((x,p)->loss_galactic(x,p,re,data_x,data_y),GalacticOptim.AutoZygote())
+    prob = OptimizationProblem(f,ps,[0f0])
+    sol = solve(prob, NelderMead(), maxiters=3, cb = cbs)
+    @time sol = solve(prob,NelderMead(), maxiters=100, cb = cbs)
 end
-train()
+@time train()
